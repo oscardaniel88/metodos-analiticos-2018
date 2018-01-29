@@ -78,7 +78,7 @@ sign
 #La unica verdadera permutación es la funcion h3
 
 #¿Qué tan cerca están las similitudes de Jaccard estimadas por minhash de las verdaderas similitudes?
-##Similitudes verdadras
+##Similitudes verdaderas
 ###d1 vs d2
 sum(mat[,1]==mat[,2])/6
 ###d1 vs d3

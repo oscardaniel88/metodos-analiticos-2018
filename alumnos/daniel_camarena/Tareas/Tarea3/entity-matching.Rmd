@@ -1,0 +1,205 @@
+---
+title: "Tarea LSH: Entity matching"
+output: html_notebook
+---
+
+
+
+En este ejemplo veremos como usar LSH de una manera simple
+para encontrar registros
+que se refieren al mismo elemento, pero pueden diferir en cómo están
+registrados (entity matching).
+
+## Datos
+
+Los [datos](https://dbs.uni-leipzig.de/de/research/projects/object_matching/fever/benchmark_datasets_for_entity_resolution) para este ejempo particular trata con dos fuentes bibliográficas (DBLP, ACM)
+de artículos y conferencias de cómputo. La carpeta del repositorio
+es datos/similitud/entity-matching.
+
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+acm <- read_csv('datos/similitud/entity_matching/ACM.csv')
+dbl <- read_csv('datos/similitud/entity_matching/DBLP2.csv')
+```
+
+```{r}
+head(acm)
+head(dbl)
+nrow(acm)
+nrow(dbl)
+```
+
+**Pregunta**: ¿si intentas una aproximación por fuerza bruta, cuántas comparaciones
+tendrías que hacer?
+
+```{r}
+nrow(acm)*nrow(dbl)
+```
+## Shingling y hashing
+
+Vamos a poner todos los documentos en una sola lista. Aunque al final
+encontremos elementos de la misma fuente en la misma cubeta, podemos
+filtrar estos. En este caso escogemos 20 hashes agrupados en 5 bandas, y 
+shingles de tamaño 4, y usamos sólo título y autor.
+
+```{r}
+acm_1 <- acm %>% select(title, authors) %>% 
+        mutate(texto = paste(title, authors, sep = "    "))
+dbl_1 <- dbl %>% select(title, authors) %>% 
+         mutate(texto = paste(title, authors, sep = "    "))
+```
+
+**Pregunta**: ¿por qué incluimos algún espacio en blanco entre título y autor?
+
+**Respuesta** Para que el Shingling funcione mejor
+
+
+```{r}
+shingle_chars <- function(string, lowercase = FALSE, k = 4){
+  # produce shingles (con repeticiones)
+  if(lowercase) {
+    string <- str_to_lower(string)
+  }
+  shingles <- seq(1, nchar(string) - k + 1) %>%
+    map_chr(function(x) substr(string, x, x + k - 1))
+  shingles
+}
+```
+
+
+```{r}
+library(textreuse)
+minhasher <- minhash_generator(20)
+nombres_acm <- paste0("acm-doc-", 1:length(acm_1$texto))
+nombres_dbl <- paste0("dbl-doc-", 1:length(dbl_1$texto))
+nombres <- c(nombres_acm, nombres_dbl)
+texto <- c(acm_1$texto, dbl_1$texto)
+names(texto) <- nombres
+corpus <- TextReuseCorpus(text = texto,
+                          minhash_func = minhasher,
+                          tokenizer = shingle_chars, k = 4,
+                          progress = FALSE, skip_short = FALSE)
+
+```
+
+
+
+```{r}
+lsh_conf <- lsh(corpus, bands = 5) 
+```
+
+
+**Pregunta**: Haz una gráfica mostrando qué porcentaje de cada nivel
+de similitud tiene probabilidad de ser capturado para este problema.
+Explica en qué casos esto sería razonable, y si consideras apropiado
+cambia este número.
+
+```{r, fig.width=4, fig.asp=0.6, echo = FALSE}
+graficar_curvas <- function(df_br, colour = TRUE){
+  r <- df_br$r
+  b <- df_br$b
+  datos_graf <- data_frame(s = seq(0, 1, 0.01))
+  curvas_similitud <- data_frame(b = b, r =r) %>%
+                    group_by(r, b) %>%
+                    mutate(datos = map2(r, b, function(r, b){
+                      datos_graf %>% 
+                      mutate(prob = 1 - (1 - s ^ r) ^b)
+                    })) %>%
+                    unnest
+  graf_salida <- ggplot(curvas_similitud, 
+                        aes(x = s, y = prob, 
+                            colour = as.factor(interaction(b,r)))) +
+                 geom_line(size=1.1) + 
+                 labs(x = 'similitud', y= 'probablidad de ser candidato',
+                      colour = 'b.r') 
+  if(colour){
+    graf_salida + scale_colour_manual(values=cb_palette)
+  }
+                 
+  graf_salida
+}
+```
+
+```{r, fig.width=4, fig.asp=0.6}
+library(dplyr)
+r <- c(4)
+df_br <- data_frame(r = r, b = 5)
+graficar_curvas(df_br) + 
+                 geom_vline(xintercept = 0.7)
+```
+
+## Evaluación de candidatos
+
+```{r}
+candidatos <- lsh_candidates(lsh_conf)
+candidatos <- lsh_compare(candidatos, corpus, jaccard_similarity)
+```
+
+```{r}
+candidatos <- candidatos %>% arrange(desc(score))
+candidatos
+```
+
+Podemos ver el contenido de un texto de esta manera:
+
+```{r}
+corpus[["acm-doc-1012"]]$content
+```
+
+
+**Pregunta**: ¿Cuántas comparaciones tuviste qué hacer (cálculos de similitud)?
+**Respuesta** 4416
+
+**Pregunta**:  Filtra esta tabla para que
+solo contenga pares que vienen de diferentes tablas (acm y dbl).
+Considera ahora los elementos con siimilitud uno. ¿Se refieren al
+mismo artículo en las dos fuentes? 
+
+**Respuesta** Si
+
+**Pregunta**: Ahora considera los elementos 
+con similitud más baja que capturaste. Examina varios casos y concluye
+si hay pares que no se refieren al mismo artículo, y por qué.
+
+```{r}
+candidatos_filter <- candidatos %>%dplyr::rowwise() %>%  
+                                   mutate(new_a = strsplit(a, split="-")[[1]][1],
+                                          new_b = strsplit(b, split="-")[[1]][1]) %>% 
+                                    filter(new_a!=new_b) %>% 
+                                    select(a,b,score)
+
+candidatos_filter_1<-candidatos_filter %>%filter(score==1)
+corpus[["acm-doc-1012"]]$content
+corpus[["dbl-doc-1767"]]$content
+
+
+candidatos_filter_lt1<-candidatos_filter %>%filter(score<1)
+corpus[["acm-doc-1406"]]$content
+corpus[["dbl-doc-1483"]]$content
+
+
+                                    
+```
+
+**Pregunta**: propón un punto de corte para la tabla de arriba, según tus
+observaciones de la pregunta anterior.
+
+**Respuesta** 0.65
+
+```{r}
+# código filtrando con score > tu_numero, y examinando los elementos
+# de similitud más baja
+candidatos_filter_mt6<-candidatos_filter %>%filter(score>.65)
+corpus[["acm-doc-479"]]$content
+corpus[["dbl-doc-894"]]$content
+
+
+```
+
+**Pregunta**: considerando tus hallazgos, ¿cómo cambiarías el número
+de hashes y bandas para mejorar tus resultados? ¿en qué sentido los mejoras?
+
+
+**Pregunta** (si tienes tiempo) Evalúa tus resultados con las respuestas
+correctas, que están en la carpeta de los datos.

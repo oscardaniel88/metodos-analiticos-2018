@@ -1261,7 +1261,7 @@ pocas evaluaciones).
 La función a minimizar es ahora
 
 \begin{equation}
-L =  \sum_{(i,j) obs} (x_{ij} - a_i - b_j - \sum_{l=1}^k u_{i,l}v_{j,l})^2 +
+L =  \sum_{(i,j) obs} (x_{ij} - \mu - a_i - b_j - \sum_{l=1}^k u_{i,l}v_{j,l})^2 +
 \lambda \left (  \sum_i ||u_i||^2 +  \sum_j ||v_j||^2 +  \sum_i a_i^2 + \sum_j b_j^2 \right )
 (\#eq:regdescenso)
 \end{equation}
@@ -1288,11 +1288,13 @@ v_j^{(n+1)} = v_j^{(n)} + \gamma \left ( e_{i,j} u_j^{(n)} -  \frac{\lambda}{m_j
 $$
 
 
-Para los sesgos, las actualizaciones son:
+Para los sesgos, las actualizaciones son (no regularizamos la media global):
 
-$$a_i^{(n+1)} = \gamma \left ( e_{i,j} - \frac{\lambda}{n_i} a_i^{(n)} \right )$$
+$$mu^{(n+1)} = mu^{(n)} + \gamma e_{i,j}$$
   
-$$a_i^{(n+1)} = \gamma \left ( e_{i,j} - \frac{\lambda}{m_j} b_j^{(n)} \right )$$
+$$a_i^{(n+1)} = a_i^{(n)} + \gamma \left ( e_{i,j} - \frac{\lambda}{n_i} a_i^{(n)} \right )$$
+  
+$$b_j^{(n+1)} = b_i^{(n+1)} + \gamma \left ( e_{i,j} - \frac{\lambda}{m_j} b_j^{(n)} \right )$$
   
 Inicializamos las matrices $U$ y $V$ con valores aleatorios chicos.
 ```
@@ -1344,7 +1346,7 @@ j_val <- dat_valida$peli_id
 y_val <- dat_valida$calif
 ```
 
-Podemos agregar tamibén dos usuarios nuevos con evaluaciones
+Podemos agregar también dos usuarios nuevos con evaluaciones
 opuestas (puedes llenar con tus preferencias)
 ```{r}
 i_usuario_1 <- rep(100001, 12)
@@ -1518,15 +1520,16 @@ del gusto implícito, por ejemplo:
 
 Estos datos tienen la ventaja de que describen acciones del usuario,
 en lugar de un rating que puede estar influido por sesgos de imagen
-o de propiedad: quizá
+o de la calificación que "debería" tener un artículo además 
+de la preferencia: quizá
 disfruto muchísimo *Buffy the Vampire Slayer*, pero lo califico con un 3,
-aunque un documental de ballenas que me simplemente me gustó le pongo un 5.
+aunque un documental de ballenas que simplemente me gustó le pongo un 5.
 En los datos implícitos se vería de todas formas mi consumo frecuente
 de *Buffy the Vampire Slayer*, y quizá unos cuantos de documentales 
 famosos.
 
 Sea $r_{ij}$ una medida implícita como las mencionadas arriba, para el usuario
-$i$ y el artículo $j$. Ponemos $r_{i,j}=0$ cuando no ha habido interacción
+$i$ y el artículo $j$. Ponemos $r_{i,j}=0$ cuando no se ha observado interacción
 entre este usuario y el artículo. 
 
 
@@ -1535,7 +1538,7 @@ implícitos son en un sentido menos informativos que los explícitos:
 
 - Puede ser que el valor de $r_{ij}$ sea relativamente bajo (pocas interacciones), pero de todas formas se trate de un artículo que es muy preferido (por ejemplo, solo vi Star Wars I una vez, pero me gusta mucho). Esto no pasa con los ratings, pues ratings bajos indican baja preferencia.
 
-- Sin embargo, estamos seguros de que niveles altos de interacción (vio muchas veces una canción, etc.), es indicación de preferencia alta.
+- Sin embargo, estamos seguros de que niveles altos de interacción (oyó muchas veces una canción, etc.), es indicación de preferencia alta.
 
 - Así que en nuestro modelo no necesariamente queremos predecir directamente la variable $r_{ij}$: puede haber artículos con predicción baja de $r_{ij}$ que
 descubramos de todas formas van a ser altamente preferidos.
@@ -1560,7 +1563,7 @@ donde $\alpha$ es un parámetro que hay que afinar (por ejemplo $\alpha$ entre 1
 $\alpha = 40$, donde $r_{ij}$ es el número de veces que el usuario ha visto
 un programa (contando vistas parciales, así que es un número real).
 
-Y la función objetivo se define como
+La función objetivo (sin regularización) se define como
 
 \begin{equation}
 L =  \sum_{(i,j)} c_{ij}(p_{ij}  - \sum_{l=1}^k u_{i,l}v_{j,l})^2
@@ -1569,8 +1572,9 @@ L =  \sum_{(i,j)} c_{ij}(p_{ij}  - \sum_{l=1}^k u_{i,l}v_{j,l})^2
 
 Nótese la diferencia con el caso explícito. En este caso, los valores
 de $c_{ij}$ (confianza) actúan como un pesos en el ajuste de
-los factores, indicando que valores de $r_{ij}$ son más informativos y
-deben contribuir más en el ajuste. Adicionalmente, los valores
+los factores, indicando que valores altos de $r_{ij}$ son más informativos y
+deben contribuir más en el ajuste, sin descalificar que un
+artìculo con $r_{ij$ bajo puede ser preferido. Adicionalmente, los valores
 para los cuales $p_{ij}=0$ son los que reciben el peso mínimo ($c_{ij}=1$).
 
 Igual que en los ejemplos anteriores, usualmente se agregan términos
@@ -1587,9 +1591,7 @@ como RECM o MAD que usamos en el caso explícito
 no son tan apropiadas para este problema. 
 
 Una alternativa es, para cada usuario $i$, ordenar los artículos de 
-mayor a menor valor de $\hat{p}_{ij} = u_iv_j^t$ , 
-seleccionar una lista de los mejores $K$ artículos
-(canciones, pellículas), y calcular
+mayor a menor valor de $\hat{p}_{ij} = u_iv_j^t$ (canciones, pellículas), y calcular
 
 $$
 rank = \frac{\sum_{j} p_{ij}rank_{i,j}}{\sum_j p_{ij}}
@@ -1623,6 +1625,22 @@ un tamaño razonable de de datos de validación.
 
 
 
+## Tarea (para 5 de marzo) {-}
+
+
+- Intenta usar unos 20- 30 factores latentes para el ejemplo
+de descenso estocástico. Puede ser que tengas que cambiar el 
+parámetro de regularización para obtener mejor desempeño. ¿Cómo
+se comparan los errores de entrenamiento y validación en cada caso?
+
+- En el ejemplo de descenso estocástico, escoge algunas películas
+adicionales y calificalas con tus propios gustos (o algún prototipo
+de gustos que se te ocurrra). Examina las recomendaciones que produces.
+
+- Haz algunos experimentos con el
+parámetro de regularización en el ejemplo de mínimos cuadrados
+alternados (por ejemplo 0.001, 0.1, 1.0). ¿Qué observas en el error
+de validación? 
 
 
 

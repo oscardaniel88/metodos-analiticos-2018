@@ -1,0 +1,119 @@
+---
+title: "Examen 1 MA Daniel Camarena, Max Alvarez"
+author: "Daniel Camarena, Max Alvarez"
+date: "12/3/2018"
+output: html_document
+---
+
+##Ejercicio 1
+
+En este ejemplo construiremos una aplicación para devolver rápidamente correos similares a uno dado, en el sentido de que contienen palabras similares. Utilizaremos minhashing/LSH.
+
+Utilizaremos los datos de correos de Enron de https://archive.ics.uci.edu/ml/datasets/Bag+of+Words. El formato está explicado en el archivo que acompaña los datos (docword.enron y vocab.enron). Considera a las palabras como tejas.
+
+* Construye una matriz de firmas (de longitud 16) de minhashing para esta colección. Utiliza la matriz de firmas para encontrar mails similares al 900 (más de 50% de similitud de Jaccard) ¿Qué palabras comparten estos documentos?
+
+* (LSH) Utiliza 8 bandas de 2 hashes cada una para obtener pares candidatos para similitud. A partir de los candidatos en las cubetas correspondientes, devuelve los 20 mejores candidatos (si existen) para los documentos 100, 105, 1400. Recuerda calcular la similitud exacta para los pares candidatos que consideres.
+
+* En cada caso, describe el grupo de candidatos mostrando las palabras más comunes que ocurren en ellos.
+
+###Leamos los datos
+```{r}
+library(tidyverse)
+library(textreuse)
+
+docword<-read_delim("Datos/docword.enron.txt",skip=3, delim=' ', col_names=c("docID","wordID","count"))
+vocab<-read_csv("Datos/vocab.enron.txt", col_names=c("word","wordID"))
+
+##Asignamos el ID a cada palabra
+vocab$wordID=seq(1:28102)
+
+##Hacemos un join para poner las palabras en los correos
+emails <- left_join(docword,vocab, by="wordID") %>% select(docID, word, count)
+##Agrupamos todas las palabras de cada documento en una sola fila
+emails_clean <- aggregate(word ~ docID, data = emails, paste, collapse = " ")
+
+##Convierte las palabras en Tejas
+shingle_chars <- function(string, lowercase = FALSE){
+    if(lowercase) {
+      string <- str_to_lower(string)
+    }
+    shingles <- tokenize_words(string)
+    shingles
+  }
+
+set.seed(32)
+num_hashes <- 16
+textos <- character(39861)
+textos <- emails_clean$word
+tejas_doc <- lapply(textos, shingle_chars)
+
+##Armamos la matriz Tejas vs Documentos
+df <- data_frame(id_doc = paste0('doc_',
+                                 seq(1, length(tejas_doc))),
+           tejas = tejas_doc) %>% 
+           unnest %>%
+           unique %>%
+           mutate(val = 1) %>%
+           spread(id_doc, val, fill = 0) 
+
+##Generamos las permutaciones
+permutaciones <- sapply(1:num_hashes, function(i){
+  sample(1:nrow(df), nrow(df))
+})
+
+#Quitamos la primera columna (trae las tejas y no nos sirve)
+df<-df[,-1]
+
+##Convertimos las permutaciones en df
+permute_df <- structure( permutaciones, names = paste( "hash_", 1:16 ) ) %>%
+              data.frame()
+
+##Obtenemos un vector con los indices de la matriz tejas vs documentos que no son 0's
+non_zero_rows <- lapply(1:ncol(df), function(j) {
+    return( which( df[, j] != 0 ) )
+})
+
+##Inicializamos la matriz de firmas
+SM <- matrix( data = NA, nrow = num_hashes, ncol = ncol(df) )
+
+##Obtenemos las firmas
+for( i in 1:ncol(df) ) {
+    for( s in 1:num_hashes ) {
+        SM[ s, i ] <- min( permute_df[, s][ non_zero_rows[[i]]] )
+    }
+}
+
+colnames(SM) <- paste( "doc", 1:length(df), sep = "_" )
+rownames(SM) <- paste( "h", 1:num_hashes, sep = "_" )  
+Result<-as.data.frame(SM)
+
+##Similitud de Jaccard
+sim_jaccard <- function(a, b){
+    length(intersect(a, b)) / length(union(a, b))
+}
+
+##Buscamos los candidatos arriba del 50% de similitud
+candidatos <- character(39861)
+for (i in 1:ncol(Result)){
+  if((sim_jaccard(Result[,100],Result[,i]))>=0.5){
+   candidatos[i]<-paste("doc",i,sep="_")
+  }
+}
+
+##Imprimimos el resultado
+candidatos<-candidatos[candidatos!=""]
+print(candidatos)
+
+
+```
+
+##LSH
+```{r}
+##Acomodamos los datos para poder trabajar con ellos
+Result$hash <- rownames(Result)
+df_firmas <- Result %>% gather(key,hash)
+
+df_firmas[1:18,]
+```
+

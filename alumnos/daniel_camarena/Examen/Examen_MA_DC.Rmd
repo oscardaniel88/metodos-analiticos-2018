@@ -17,7 +17,7 @@ Utilizaremos los datos de correos de Enron de https://archive.ics.uci.edu/ml/dat
 
 * En cada caso, describe el grupo de candidatos mostrando las palabras más comunes que ocurren en ellos.
 
-###Leamos los datos
+### Leamos los datos
 ```{r}
 library(tidyverse)
 library(textreuse)
@@ -27,13 +27,17 @@ vocab<-read_csv("Datos/vocab.enron.txt", col_names=c("word","wordID"))
 
 ##Asignamos el ID a cada palabra
 vocab$wordID=seq(1:28102)
+```
 
+
+### Trabajamos los datos para que puedan ser trabajados
+```{r}
 ##Hacemos un join para poner las palabras en los correos
 emails <- left_join(docword,vocab, by="wordID") %>% select(docID, word, count)
 ##Agrupamos todas las palabras de cada documento en una sola fila
 emails_clean <- aggregate(word ~ docID, data = emails, paste, collapse = " ")
 
-##Convierte las palabras en Tejas
+##Devuelve las Tejas, en este caso son las palabras del correo
 shingle_chars <- function(string, lowercase = FALSE){
     if(lowercase) {
       string <- str_to_lower(string)
@@ -41,7 +45,10 @@ shingle_chars <- function(string, lowercase = FALSE){
     shingles <- tokenize_words(string)
     shingles
   }
+```
 
+### Comenzamos con el minhashing
+```{r}
 set.seed(32)
 num_hashes <- 16
 textos <- character(39861)
@@ -93,7 +100,31 @@ sim_jaccard <- function(a, b){
     length(intersect(a, b)) / length(union(a, b))
 }
 
-##Buscamos los candidatos arriba del 50% de similitud
+```
+
+### Resultados
+
+```{r}
+
+##Buscamos los candidatos arriba del 50% de similitud con respecto al correo 900
+candidatos <- character(39861)
+for (i in 1:ncol(Result)){
+  if((sim_jaccard(Result[,900],Result[,i]))>=0.5){
+   candidatos[i]<-paste("doc",i,sep="_")
+  }
+}
+
+##Imprimimos el resultado
+candidatos<-candidatos[candidatos!=""]
+print(candidatos)
+
+```
+
+#### En este caso no encontramos documentos similares (arriba del 50%) al correo 900, para validar nuestro algoritmo intentamos buscar documentos similares al correo 100
+
+```{r}
+
+##Buscamos los candidatos arriba del 50% de similitud con respecto al correo 900
 candidatos <- character(39861)
 for (i in 1:ncol(Result)){
   if((sim_jaccard(Result[,100],Result[,i]))>=0.5){
@@ -105,6 +136,22 @@ for (i in 1:ncol(Result)){
 candidatos<-candidatos[candidatos!=""]
 print(candidatos)
 
+```
+
+#### Veamos las palabras que se repitieron por cada correo
+
+```{r}
+library(stringr)
+regexp <- "[[:digit:]]+"
+correos<-str_extract(candidatos, regexp)
+
+correo_100<-emails %>% filter(docID==100)
+for(i in 1:length(correos)){
+  if(correos[i]!=100){
+    correo_x<-emails %>% filter(docID==correos[i])
+    print(inner_join(correo_100,correo_x,by="word"))
+  }
+}
 
 ```
 
@@ -114,6 +161,129 @@ print(candidatos)
 Result$hash <- rownames(Result)
 df_firmas <- Result %>% gather(key,hash)
 
-df_firmas[1:18,]
+##Ponemos los nombres de las columnas para poder reutilzar el código visto en clase
+colnames(df_firmas)<-c("hash","documento","minhash")
+
+##Agrupamos los documentos en 8 grupos de 2 hashes
+cubetas_df <- 
+    df_firmas %>%
+    mutate(grupo  = (as.integer(substring(hash, 3)) - 1) %/% 2) %>%
+    mutate(grupo = paste0('g_', grupo)) %>%
+    mutate(cubeta  = paste(hash, minhash, sep = '-'))  
+
+
+## Armamos las cubetas
+cubetas_df <- cubetas_df %>%
+    group_by(documento, grupo) %>%
+    arrange(hash) %>%
+    summarise(cubeta  = paste(cubeta, collapse = '-')) %>%
+    mutate(cubeta = paste(grupo, cubeta))
+
+##Agrupamos los documentos por cubeta
+docs_agrupados <- cubetas_df %>% 
+    group_by(cubeta) %>%
+    summarise(docs = list(documento)) 
+
+extraer_pares <- function(candidatos){
+  candidatos %>% 
+    map(function(x) combn(sort(x), 2, simplify = FALSE)) %>% 
+    flatten %>% 
+    unique
+}
+
+
+Result_LSH <- docs_agrupados$docs %>% keep(function(x) length(x) > 1) %>% extraer_pares
+
+```
+
+##Resultados 
+
+###Correos similares al 100
+```{r}
+index_res <- list()
+for (i in 1:length(Result_LSH)){
+  if('doc_100'%in%Result_LSH[[i]]){
+    index_res[i]<-i
+  }
+}
+index_res<- unlist(index_res)
+Result_LSH[index_res][1:20]
+```
+
+###Palabras mas repetidas en correos similares
+```{r}
+
+sim_100 <- Result_LSH[index_res][1:20]
+sim_100 <- sim_100 %>% unlist
+regexp <- "[[:digit:]]+"
+correos<-str_extract(sim_100, regexp)
+correos<-correos[correos!=100]
+correo_100<-emails %>% filter(docID==100)
+for(i in 1:length(correos)){
+    correo_x<-emails %>% filter(docID==correos[i])
+    print(inner_join(correo_100,correo_x,by="word"))
+}
+
+
+```
+
+###Correos similares al 105
+```{r}
+index_res <- list()
+for (i in 1:length(Result_LSH)){
+  if('doc_105'%in%Result_LSH[[i]]){
+    index_res[i]<-i
+  }
+}
+
+index_res<- unlist(index_res)
+Result_LSH[index_res][1:20]
+```
+
+###Palabras mas repetidas en correos similares
+```{r}
+
+
+sim_105 <- Result_LSH[index_res][1:20]
+sim_105 <- sim_105 %>% unlist
+regexp <- "[[:digit:]]+"
+correos<-str_extract(sim_105, regexp)
+correos<-correos[correos!=105]
+correo_105<-emails %>% filter(docID==105)
+for(i in 1:length(correos)){
+    correo_x<-emails %>% filter(docID==correos[i])
+    print(inner_join(correo_105,correo_x,by="word"))
+}
+
+
+```
+
+###Correos similares al 1400
+```{r}
+index_res <- list()
+for (i in 1:length(Result_LSH)){
+  if('doc_1400'%in%Result_LSH[[i]]){
+    index_res[i]<-i
+  }
+}
+
+index_res<- unlist(index_res)
+Result_LSH[index_res][1:20]
+```
+
+###Palabras mas repetidas en correos similares
+```{r}
+
+sim_1400 <- Result_LSH[index_res][1:20]
+sim_1400 <- sim_1400 %>% unlist
+regexp <- "[[:digit:]]+"
+correos<-str_extract(sim_1400, regexp)
+correos<-correos[correos!=1400]
+correo_1400<-emails %>% filter(docID==1400)
+for(i in 1:length(correos)){
+    correo_x<-emails %>% filter(docID==correos[i])
+    print(inner_join(correo_1400,correo_x,by="word"))
+}
+
 ```
 

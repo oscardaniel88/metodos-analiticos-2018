@@ -1,0 +1,537 @@
+---
+title: "Examen 1 Daniel Camarena, Maximiliano Alvarez"
+author: "Daniel Camarena, Maximiliano Alvarez"
+date: "12/3/2018"
+output: html_document
+---
+
+##Ejercicio 1: Correos de Enron
+
+En este ejemplo construiremos una aplicación para devolver rápidamente correos similares a uno dado, en el sentido de que contienen palabras similares. Utilizaremos minhashing/LSH.
+
+Utilizaremos los datos de correos de Enron de https://archive.ics.uci.edu/ml/datasets/Bag+of+Words. El formato está explicado en el archivo que acompaña los datos (docword.enron y vocab.enron). Considera a las palabras como tejas.
+
+* Construye una matriz de firmas (de longitud 16) de minhashing para esta colección. Utiliza la matriz de firmas para encontrar mails similares al 900 (más de 50% de similitud de Jaccard) ¿Qué palabras comparten estos documentos?
+
+* (LSH) Utiliza 8 bandas de 2 hashes cada una para obtener pares candidatos para similitud. A partir de los candidatos en las cubetas correspondientes, devuelve los 20 mejores candidatos (si existen) para los documentos 100, 105, 1400. Recuerda calcular la similitud exacta para los pares candidatos que consideres.
+
+* En cada caso, describe el grupo de candidatos mostrando las palabras más comunes que ocurren en ellos.
+
+### Leamos los datos
+```{r}
+library(tidyverse)
+library(textreuse)
+library(evclust)
+
+docword<-read_delim("Datos/docword.enron.txt",skip=3, delim=' ', col_names=c("docID","wordID","count"))
+vocab<-read_csv("Datos/vocab.enron.txt", col_names=c("word","wordID"))
+
+##Asignamos el ID a cada palabra
+vocab$wordID=seq(1:28102)
+```
+
+
+### Trabajamos los datos para que puedan ser trabajados
+```{r}
+##Hacemos un join para poner las palabras en los correos
+emails <- left_join(docword,vocab, by="wordID") %>% select(docID, word, count)
+##Agrupamos todas las palabras de cada documento en una sola fila
+emails_clean <- aggregate(word ~ docID, data = emails, paste, collapse = " ")
+
+##Devuelve las Tejas, en este caso son las palabras del correo
+shingle_chars <- function(string, lowercase = FALSE){
+    if(lowercase) {
+      string <- str_to_lower(string)
+    }
+    shingles <- tokenize_words(string)
+    shingles
+  }
+```
+
+### Comenzamos con el minhashing
+```{r}
+set.seed(32)
+num_hashes <- 16
+textos <- character(39861)
+textos <- emails_clean$word
+tejas_doc <- lapply(textos, shingle_chars)
+
+##Armamos la matriz Tejas vs Documentos
+df <- data_frame(id_doc = paste0('doc_',
+                                 seq(1, length(tejas_doc))),
+           tejas = tejas_doc) %>% 
+           unnest %>%
+           unique %>%
+           mutate(val = 1) %>%
+           spread(id_doc, val, fill = 0) 
+
+##Generamos las permutaciones
+permutaciones <- sapply(1:num_hashes, function(i){
+  sample(1:nrow(df), nrow(df))
+})
+
+#Quitamos la primera columna (trae las tejas y no nos sirve)
+df<-df[,-1]
+
+##Convertimos las permutaciones en df
+permute_df <- structure( permutaciones, names = paste( "hash_", 1:16 ) ) %>%
+              data.frame()
+
+##Obtenemos un vector con los indices de la matriz tejas vs documentos que no son 0's
+non_zero_rows <- lapply(1:ncol(df), function(j) {
+    return( which( df[, j] != 0 ) )
+})
+
+##Inicializamos la matriz de firmas
+SM <- matrix( data = NA, nrow = num_hashes, ncol = ncol(df) )
+
+##Obtenemos las firmas
+for( i in 1:ncol(df) ) {
+    for( s in 1:num_hashes ) {
+        SM[ s, i ] <- min( permute_df[, s][ non_zero_rows[[i]]] )
+    }
+}
+
+colnames(SM) <- paste( "doc", 1:length(df), sep = "_" )
+rownames(SM) <- paste( "h", 1:num_hashes, sep = "_" )  
+Result<-as.data.frame(SM)
+
+##Similitud de Jaccard
+sim_jaccard <- function(a, b){
+    length(intersect(a, b)) / length(union(a, b))
+}
+
+```
+
+### Resultados
+
+```{r}
+
+##Buscamos los candidatos arriba del 50% de similitud con respecto al correo 900
+candidatos <- character(39861)
+for (i in 1:ncol(Result)){
+  if((sim_jaccard(Result[,900],Result[,i]))>=0.5){
+   candidatos[i]<-paste("doc",i,sep="_")
+  }
+}
+
+##Imprimimos el resultado
+candidatos<-candidatos[candidatos!=""]
+print(candidatos)
+
+```
+
+#### En este caso no encontramos documentos similares (arriba del 50%) al correo 900, para validar nuestro algoritmo intentamos buscar documentos similares al correo 100
+
+```{r}
+
+##Buscamos los candidatos arriba del 50% de similitud con respecto al correo 900
+candidatos <- character(39861)
+for (i in 1:ncol(Result)){
+  if((sim_jaccard(Result[,100],Result[,i]))>=0.5){
+   candidatos[i]<-paste("doc",i,sep="_")
+  }
+}
+
+##Imprimimos el resultado
+candidatos<-candidatos[candidatos!=""]
+print(candidatos)
+
+```
+
+#### Veamos las palabras que se repitieron por cada correo
+
+```{r}
+library(stringr)
+regexp <- "[[:digit:]]+"
+correos<-str_extract(candidatos, regexp)
+
+correo_100<-emails %>% filter(docID==100)
+for(i in 1:length(correos)){
+  if(correos[i]!=100){
+    correo_x<-emails %>% filter(docID==correos[i])
+    print(inner_join(correo_100,correo_x,by="word"))
+  }
+}
+
+```
+
+##LSH
+```{r}
+##Acomodamos los datos para poder trabajar con ellos
+Result$hash <- rownames(Result)
+df_firmas <- Result %>% gather(key,hash)
+
+##Ponemos los nombres de las columnas para poder reutilzar el código visto en clase
+colnames(df_firmas)<-c("hash","documento","minhash")
+
+##Agrupamos los documentos en 8 grupos de 2 hashes
+cubetas_df <- 
+    df_firmas %>%
+    mutate(grupo  = (as.integer(substring(hash, 3)) - 1) %/% 2) %>%
+    mutate(grupo = paste0('g_', grupo)) %>%
+    mutate(cubeta  = paste(hash, minhash, sep = '-'))  
+
+
+## Armamos las cubetas
+cubetas_df <- cubetas_df %>%
+    group_by(documento, grupo) %>%
+    arrange(hash) %>%
+    summarise(cubeta  = paste(cubeta, collapse = '-')) %>%
+    mutate(cubeta = paste(grupo, cubeta))
+
+##Agrupamos los documentos por cubeta
+docs_agrupados <- cubetas_df %>% 
+    group_by(cubeta) %>%
+    summarise(docs = list(documento)) 
+
+extraer_pares <- function(candidatos){
+  candidatos %>% 
+    map(function(x) combn(sort(x), 2, simplify = FALSE)) %>% 
+    flatten %>% 
+    unique
+}
+
+
+Result_LSH <- docs_agrupados$docs %>% keep(function(x) length(x) > 1) %>% extraer_pares
+
+```
+
+##Resultados 
+
+###Correos similares al 100
+```{r}
+index_res <- list()
+for (i in 1:length(Result_LSH)){
+  if('doc_100'%in%Result_LSH[[i]]){
+    index_res[i]<-i
+  }
+}
+index_res<- unlist(index_res)
+Result_LSH[index_res][1:20]
+```
+
+###Palabras mas repetidas en correos similares
+```{r}
+
+sim_100 <- Result_LSH[index_res][1:20]
+sim_100 <- sim_100 %>% unlist
+regexp <- "[[:digit:]]+"
+correos<-str_extract(sim_100, regexp)
+correos<-correos[correos!=100]
+correo_100<-emails %>% filter(docID==100)
+for(i in 1:length(correos)){
+    correo_x<-emails %>% filter(docID==correos[i])
+    print(inner_join(correo_100,correo_x,by="word"))
+}
+
+
+```
+
+###Correos similares al 105
+```{r}
+index_res <- list()
+for (i in 1:length(Result_LSH)){
+  if('doc_105'%in%Result_LSH[[i]]){
+    index_res[i]<-i
+  }
+}
+
+index_res<- unlist(index_res)
+Result_LSH[index_res][1:20]
+```
+
+###Palabras mas repetidas en correos similares
+```{r}
+
+
+sim_105 <- Result_LSH[index_res][1:20]
+sim_105 <- sim_105 %>% unlist
+regexp <- "[[:digit:]]+"
+correos<-str_extract(sim_105, regexp)
+correos<-correos[correos!=105]
+correo_105<-emails %>% filter(docID==105)
+for(i in 1:length(correos)){
+    correo_x<-emails %>% filter(docID==correos[i])
+    print(inner_join(correo_105,correo_x,by="word"))
+}
+
+
+```
+
+###Correos similares al 1400
+```{r}
+index_res <- list()
+for (i in 1:length(Result_LSH)){
+  if('doc_1400'%in%Result_LSH[[i]]){
+    index_res[i]<-i
+  }
+}
+
+index_res<- unlist(index_res)
+Result_LSH[index_res][1:20]
+```
+
+###Palabras mas repetidas en correos similares
+```{r}
+
+sim_1400 <- Result_LSH[index_res][1:20]
+sim_1400 <- sim_1400 %>% unlist
+regexp <- "[[:digit:]]+"
+correos<-str_extract(sim_1400, regexp)
+correos<-correos[correos!=1400]
+correo_1400<-emails %>% filter(docID==1400)
+for(i in 1:length(correos)){
+    correo_x<-emails %>% filter(docID==correos[i])
+    print(inner_join(correo_1400,correo_x,by="word"))
+}
+
+```
+
+
+##Ejercicio 2: Recomendacion
+
+Utilizaremos datos de movielens, que están en https://grouplens.org/datasets/movielens/20m/: 20 million ratings and 465,000 tag applications applied to 27,000 movies by 138,000 users.
+
+* Construye una muestra de entrenamiento y una de validación
+* Utiliza descenso estocástico o mínimos cuadrados alternados para encontrar factores latentes.
+* Evalúa el modelo de factores latentes que ajustaste usando la muestra de validación y ajusta parámetros si es necesario para mejorar el desempeño.
+* Explica cómo hacer predicciones a partir del modelo (predicción de la calificación 1-5). ¿Qué películas recomendarías para el usuario usuario 4000 y el usuario 6000, y usuario 1333? (que no haya visto).
+
+Nota: si tienes problemas de memoria, por ejemplo, piensa en estrategias para resolverlo. Puedes correrlo en una máquina más grande, o intentar muestrar una fracción relativamente grande de usuarios.
+
+
+Utilizaremos datos de **movielens**, que están en https://grouplens.org/datasets/movielens/20m/: 20 million ratings and 465,000 tag applications applied to 27,000 movies by 138,000 users.
+
+```{r, message=FALSE, warning=FALSE}
+# librerías necesarias
+library(tidyverse)
+library(sparklyr)
+
+# cargamos los datos de la base
+movies <- read_csv("datos/ml-20m/movies.csv",skip=1, col_names=c("movieID","Title","genres"))
+ratings <- read_csv("datos/ml-20m/ratings.csv",skip=1, col_names=c("userId","movieId","rating","timestamp"))
+tags <- read_csv("datos/ml-20m/tags.csv",skip=1, col_names=c("userId","movieId","tag","timestamp"))
+links <- read_csv("datos/ml-20m/links.csv",skip=1, col_names=c("movieId","imdbId","tmdbId"))
+genome_tags <- read_csv("datos/ml-20m/genome-tags.csv",skip=1, col_names=c("tagId","tag"))
+genome_scores <- read_csv("datos/ml-20m/genome-scores.csv",skip=1, col_names=c("movieId","tagId","relevance"))
+
+# función para calcular el error cuadrático medio
+recm <- function(calif, pred){
+  sqrt(mean((calif - pred)^2))
+}
+
+```
+
+1. Construye una muestra de entrenamiento y una de validación.
+
+Para lo subsecuente, usaremos los datos contenidos en *ratings*.
+
+```{r}
+# observamos lo contenido en ratings
+names(ratings)
+
+# seleccionamos las columnas relevantes
+muestra_nf <- ratings %>% 
+  select(userId, movieId, rating)
+```
+
+Una vez que tenemos las columnas de interés, creamos las muestras de entrenamiento y de validación.
+
+```{r}
+rm(list=c('ind_entrena','dat_entrena','dat_valida'))
+
+# fijamos una semilla para la selección de las muestras
+set.seed(12345)
+
+# seleccionamos a los usuarios de interés para las preguntas posteriores
+usuarios_relevantes <- muestra_nf %>% 
+  filter(userId %in% c(4000, 6000, 1333))
+
+# definimos el tamaño de la muestra
+smp_size <- floor(0.15 * nrow(muestra_nf))
+
+# tomamos la muestra
+muestra_nf <- sample(muestra_nf)
+
+ind_entrena <- sample(seq_len(nrow(muestra_nf)), size = smp_size)
+
+dat_entrena <- muestra_nf[ind_entrena, ] %>% 
+  filter(!userId %in% c(4000, 6000, 1333)) %>% 
+  bind_rows(usuarios_relevantes)
+  
+# seleccionamos el complemento de la muestra
+dat_valida <- muestra_nf[-ind_entrena, ]
+dat_valida <- dat_valida[1:nrow(dat_entrena),]
+```
+
+Una vez construidos ambos conjuntos, podemos proceder a encontrar los factores latentes.
+
+```{r}
+# conjunto de entrenamiento
+head(dat_entrena)
+
+# conjunto de validación
+head(dat_valida)
+```
+
+2. Utiliza descenso estocástico o mínimos cuadrados alternados para encontrar factores latentes.
+
+Para encontrar los factores latentes usaremos mínimos cuadrados alternos, haciendo uso de un clúster de *Spark*.
+
+Antes de empezar, tomamos como referencia el modelo base.
+
+```{r, warning=FALSE, message=FALSE}
+medias_usuario_ent <- dat_entrena %>% 
+    group_by(userId) %>%
+    summarise(media_usu = mean(rating), num_calif_usu = length(rating))
+medias_peliculas_ent <- dat_entrena %>% 
+    group_by(movieId) %>%
+    summarise(media_peli = mean(rating), num_calif_peli = length(rating))
+media_gral_ent <- mean(dat_entrena$rating)
+dat_valida_2 <- dat_valida %>%
+  left_join(medias_usuario_ent) %>%
+  left_join(medias_peliculas_ent) %>%
+  mutate(media_gral = media_gral_ent) %>%
+  mutate(prediccion = media_peli + (media_usu - media_gral))
+
+dat_valida_2$prediccion[is.na(dat_valida_2$prediccion)] <- media_gral_ent
+
+dat_valida_2 %>% ungroup %>% summarise(error = recm(rating, prediccion))
+```
+
+Partiendo de lo anterior, pasamos a ajustar nuestro modelo.
+
+```{r}
+# modelo base para comparar
+medias_peliculas <- muestra_nf %>%
+  group_by(movieId) %>%
+  summarise(media_peli = mean(rating), num_calif_peli = length(rating))
+
+# configuración del cluster de Spark
+config <- spark_config()
+config$`sparklyr.shell.driver-memory` <- "6G"
+config$`sparklyr.shell.executor-memory` <- "6G"
+sc <- spark_connect(master = "local", config = config)
+spark_set_checkpoint_dir(sc, './checkpoint')
+
+# cargamos los datos al cluster
+dat <- dat_entrena %>% 
+      as.data.frame 
+
+dat_tbl <- copy_to(sc, dat, overwrite = TRUE)
+
+# preparamos el modelo
+modelo <- ml_als(dat_tbl, 
+              rating_col = 'rating',
+              user_col = 'userId',
+              item_col = 'movieId', 
+              rank = 10, reg_param = 0.05,
+              checkpoint_interval = 5,
+              max_iter = 30)
+
+# extraemos las matrices U y V que son de interés para las predicciones de los usuarios
+V_df <- collect(modelo$item_factors)
+
+dim(V_df)
+
+U_df <- collect(modelo$user_factors)
+
+dim(U_df)
+```
+
+3. Evalúa el modelo de factores latentes que ajustaste usando la muestra de validación y ajusta parámetros si es necesario para mejorar el desempeño.
+
+```{r}
+# extraemos los datos con los que validamos el ajuste del modelo
+valida_tbl <- copy_to(sc, dat_valida)
+
+preds <- sdf_predict(valida_tbl, modelo) %>% collect()
+table(is.nan(preds$prediction))
+
+ggplot(preds, aes(x = prediction)) + geom_histogram()
+
+latentes_pelis <- left_join(V_df,movies, by=c("id"="movieID")) %>% 
+                  left_join(medias_peliculas, by=c("id"="movieId"))
+
+latentes_pelis <- latentes_pelis %>% mutate(num_grupo = 
+                                              ntile(num_calif_peli, 10))
+
+ggplot(sample_n(latentes_pelis, 500), aes(y = features_1, 
+                           x = media_peli - mean(latentes_pelis$media_peli), 
+                           colour = log10(num_calif_peli))) +
+  geom_point() 
+
+arrange(latentes_pelis, features_2) %>% 
+  select(Title, features_2, media_peli, num_calif_peli) %>% 
+  filter(num_calif_peli > 500) %>% 
+  head(100) 
+
+preds$prediction[is.nan(preds$prediction)] <- mean(dat_entrena$rating)
+preds %>% ungroup %>% summarise(error = recm(rating, prediction))
+
+```
+
+Una vez que tenemos todo lo deseado, desconectamos el clúster de *Spark*.
+
+```{r}
+sparklyr::spark_disconnect_all()
+```
+
+4. Explica cómo hacer predicciones a partir del modelo (predicción de la calificación 1-5). ¿Qué películas recomendarías para el usuario usuario 4000 y el usuario 6000, y usuario 1333? (que no haya visto).
+
+Para poder realizar recomendaciones a los usuarios basados en su historial de calificaciones, es necesario que, de las matrices obtenidas del modelo $U$ y $V$, tomemos el renglón correspondiente del usuario $i$ de la matriz de usuarios $U$, y la multipliquemos por la matríz de características de las películas $V$, para obtener el ranking de calificaciones para el usuario en particular.
+
+Para conocer un poco más a los usuarios, observamos sus correspondientes renglones dentro de la matriz $U$ (los descriptores de estos).
+
+```{r}
+usuario <- 4000
+as.matrix(U_df[U_df$id[usuario],3:12])
+
+usuario <- 6000
+as.matrix(U_df[U_df$id[usuario],3:12])
+
+usuario <- 1333
+as.matrix(U_df[U_df$id[usuario],3:12])
+```
+
+Como podemos observar, son usuarios bastante similares, por lo que sería de esperar que las recomendaciones de las películas fueran similares.
+
+```{r}
+# recomendaciones de películas para el usuario 4000
+usuario <- 4000
+as.matrix(U_df[U_df$id[usuario],3:12]) %*% t(as.matrix(V_df[,3:12])) %>% 
+  t() %>% 
+  cbind(V_df[,1]) %>% 
+  as.data.frame() %>% 
+  arrange(desc(.)) %>% 
+  # filtramos las películas que el usuario ya ha calificado
+  anti_join(filter(usuarios_relevantes, userId == usuario), by = c("id" = "userId")) %>% 
+  head(n = 10) %>% 
+  left_join(select(movies, movieID, Title), by = c("id" = "movieID"))
+
+# recomendaciones de películas para el usuario 6000
+usuario <- 6000
+as.matrix(U_df[U_df$id[usuario],3:12]) %*% t(as.matrix(V_df[,3:12])) %>% 
+  t() %>% 
+  cbind(V_df[,1]) %>% 
+  as.data.frame() %>% 
+  arrange(desc(.)) %>% 
+  # filtramos las películas que el usuario ya ha calificado
+  anti_join(filter(usuarios_relevantes, userId == usuario), by = c("id" = "movieId")) %>% 
+  head(n = 10) %>% 
+  left_join(select(movies, movieID, Title), by = c("id" = "movieID"))
+
+# recomendaciones de películas para el usuario 1333
+usuario <- 1333
+as.matrix(U_df[U_df$id[usuario],3:12]) %*% t(as.matrix(V_df[,3:12])) %>% 
+  t() %>% 
+  cbind(V_df[,1]) %>% 
+  as.data.frame() %>% 
+  arrange(desc(.)) %>% 
+  # filtramos las películas que el usuario ya ha calificado
+  anti_join(filter(usuarios_relevantes, userId == usuario), by = c("id" = "userId")) %>% 
+  head(n = 10) %>% 
+  left_join(select(movies, movieID, Title), by = c("id" = "movieID"))
+
+```
